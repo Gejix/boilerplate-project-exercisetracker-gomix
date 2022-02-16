@@ -10,125 +10,137 @@ let uri = 'mongodb+srv://Admin-Gerald:' + mySecret+'@helix.vzrxf.mongodb.net/Fre
 
 mongoose.connect(uri, { useNewUrlParser: true, useUnifiedTopology: true });
 
+const User = require('./model/user')
+const Exercise = require('./model/exercise')
+
+mongoose.connect(uri, { useNewUrlParser: true, useUnifiedTopology: true }).then(res => {
+  console.log('Connected to MongoDB')
+}).catch((err) => {
+  console.log('Error connecting to MongoDB: ', err.message)
+})
+
 app.use(cors())
+
+app.use(bodyParser.urlencoded({ extended: false }))
+//app.use(bodyParser.json())
 
 app.use(express.static('public'))
 app.get('/', (req, res) => {
   res.sendFile(__dirname + '/views/index.html')
-});
+})
 
+//Creating new user.
+//POST user's username
+//then return the username and id
+app.post('/api/users', (req, res) => {
+  let uname = req.body.username //get username from POST body (form)
+  User.create({ username: uname }, (err, data) => {
+    if (err) console.log(err)
+    res.json({ username: data.username, _id: data._id })
+  })
+})
 
+//GET username
+app.get('/api/users', (req, res) => {
+  User.find({}, (err, data) => {//find all username
+    if (err) console.log(err)
+    res.json(data)
+  })
+})
+
+//POST /api/user/:id/exercises
+//create new exercise
+app.post('/api/users/:id/exercises', (req, res) => {
+  let { description, duration, date } = req.body
+  let userid = req.params.id
+  //find user by id, return username
+  User.findById(userid).then(user => {
+    if (!user) { //user not found
+      throw new Error('Not found user with this id')
+    }
+    let username = user.username
+    Exercise.create({ userid, description, duration, date }, (err, data) => {
+      if (err) console.log(err)
+      //let date = new Date(data.date)
+      res.json({
+        username: username,
+        _id: data.userid,
+        description: data.description,
+        duration: data.duration,
+        date: data.date.toDateString()
+      })
+    })
+  }).catch((err) => {
+    console.log(err)
+    res.send(err.message)
+  })
+})
+
+//GET /api/users/:_id/logs?[from][&to][&limit]
+//get user's full exercise logs
+app.get('/api/users/:_id/logs', (req, res) => {
+  let id = req.params._id
+  let { from, to, limit } = req.query //destructuring to get the query
+  if (from) {
+    from = new Date(from)
+  } else {
+    from = new Date(0)
+  }
+  if (to) {
+    to = new Date(to)
+  } else {
+    to = new Date() //make the date equal to now, so get query till current date
+  }
+  if (limit === undefined) {
+    limit = 0
+  }
+
+  User.findById(id).then(user => {
+    let username = user.username
+
+    Exercise.find({ userid: id })
+      .where('date').gte(from).lte(to)
+      .limit(parseInt(limit)).exec()
+      .then(log => res.status(200).send({
+        _id: id,
+        username: username,
+        count: log.length,
+        log: log.map(exercise => ({
+          description: exercise.description,
+          duration: exercise.duration,
+          date: new Date(exercise.date).toDateString(),
+        }))
+      }))
+  }).catch(err => {
+    console.log(err)
+    res.status(500).send(err.message)
+  })
+})
+
+// Not found middleware
+app.use((req, res, next) => {
+  return next({ status: 404, message: 'not found' })
+})
+
+// Error Handling middleware
+app.use((err, req, res, next) => {
+  let errCode, errMessage
+
+  if (err.errors) {
+    // mongoose validation error
+    errCode = 400 // bad request
+    const keys = Object.keys(err.errors)
+    // report the first validation error
+    errMessage = err.errors[keys[0]].message
+  } else {
+    // generic or custom error
+    errCode = err.status || 500
+    errMessage = err.message || 'Internal Server Error'
+  }
+  res.status(errCode).type('txt')
+    .send(errMessage)
+})
 
 const listener = app.listen(process.env.PORT || 3000, () => {
   console.log('Your app is listening on port ' + listener.address().port)
-})
-
-
-let exerciseSessionSchema = new mongoose.Schema({
-  description: {type: String, required: true},
-  duration: {type: Number, required: true},
-  date: String
-})
-
-let userSchema = new mongoose.Schema({
-  username: {type: String, required: true},
-  log: [exerciseSessionSchema]
-})
-
-let Session = mongoose.model('Session', exerciseSessionSchema)
-let User = mongoose.model('User', userSchema)
-
-app.post('/api/users', bodyParser.urlencoded({ extended: false }), (request, response) => {
-  let newUser = new User({username: request.body.username})
-  newUser.save((error, savedUser) => {
-    if(!error){
-      let responseObject = {}
-      responseObject['username'] = savedUser.username
-      responseObject['_id'] = savedUser.id
-      response.json(responseObject)
-    }
-  })
-})
-
-app.get('/api/users', (request, response) => {
-  
-  User.find({}, (error, arrayOfUsers) => {
-    if(!error){
-      response.json(arrayOfUsers)
-    }
-  })
-  
-})
-
-app.post('/api/users/:_id/exercises', bodyParser.urlencoded({ extended: false }) , (request, response) => {
-  
-  let newSession = new Session({
-    description: request.body.description,
-    duration: parseInt(request.body.duration),
-    date: request.body.date
-  })
-  
-  if(newSession.date === ''){
-    newSession.date = new Date().toISOString().substring(0, 10)
-  }
-  
-  User.findByIdAndUpdate(
-    request.params._id,
-    {$push : {log: newSession}},
-    {new: true},
-    (error, updatedUser)=> {
-      if(!error){
-        let responseObject = {}
-        responseObject['_id'] = updatedUser.id
-        responseObject['username'] = updatedUser.username
-        responseObject['date'] = new Date(newSession.date).toDateString()
-        responseObject['description'] = newSession.description
-        responseObject['duration'] = newSession.duration
-        response.json(responseObject)
-      }
-    }
-  )
-})
-
-app.get('/api/users/:_id/logs', (request, response) => {
-  
-  User.findById(request.params._id, (error, result) => {
-    if(!error){
-      let responseObject = result
-      
-      if(request.query.from || request.query.to){
-        
-        let fromDate = new Date(0)
-        let toDate = new Date()
-        
-        if(request.query.from){
-          fromDate = new Date(request.query.from)
-        }
-        
-        if(request.query.to){
-          toDate = new Date(request.query.to)
-        }
-        
-        fromDate = fromDate.getTime()
-        toDate = toDate.getTime()
-        
-        responseObject.log = responseObject.log.filter((session) => {
-          let sessionDate = new Date(session.date).getTime()
-          
-          return sessionDate >= fromDate && sessionDate <= toDate
-          
-        })
-        
-      }
-      
-      if(request.query.limit){
-        responseObject.log = responseObject.log.slice(0, request.query.limit)
-      }
-      
-      responseObject = responseObject.toJSON()
-      responseObject['count'] = result.log.length
-      response.json(responseObject)
-    }
-  })
-  
 })
